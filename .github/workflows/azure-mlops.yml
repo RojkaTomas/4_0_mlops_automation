@@ -24,25 +24,30 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      # sanity check that az is logged in on this machine
       - name: Check Azure CLI identity
         run: az account show
 
       - name: Azure – Create compute + envs + components + pipeline run
         id: submit_job
         run: |
+          # don't fail the whole step on CLI warnings
+          $ErrorActionPreference = "Continue"
+
           az extension add --name ml -y
           az configure --defaults group=$env:GROUP workspace=$env:WORKSPACE location=$env:LOCATION
 
-          # 1. Compute (ignore error if it already exists)
-          az ml compute create --file environment/compute.yaml 2>$null
+          # 1. Compute (ignore if it already exists)
+          Write-Host "=== Create / ensure compute ==="
+          az ml compute create --file environment/compute.yaml
 
-          # 2. Environments (ignore if already exist)
+          # 2. Environments
+          Write-Host "=== Create / ensure environments ==="
           foreach ($envName in @("preprocessing", "training")) {
-            az ml environment create --file "environment/$envName.yaml" 2>$null
+            az ml environment create --file "environment/$envName.yaml"
           }
 
           # 3. Components
+          Write-Host "=== Create components ==="
           $components = @(
             "components/dataprep/dataprep.yaml",
             "components/dataprep/traintestsplit.yaml",
@@ -53,14 +58,17 @@ jobs:
           }
 
           # 4. Run pipeline
+          Write-Host "=== Run pipeline ==="
           $jobName = az ml job create `
             --file pipelines/animals-classification.yaml `
             --query name -o tsv
 
+          Write-Host "Pipeline run name: $jobName"
           echo "job_name=$jobName" >> $env:GITHUB_OUTPUT
 
           # 5. Stop compute (best effort)
-          az ml compute stop --name cli-created-machine 2>$null
+          Write-Host "=== Stop compute (best effort) ==="
+          az ml compute stop --name cli-created-machine
 
     outputs:
       job_name: ${{ steps.submit_job.outputs.job_name }}
@@ -84,6 +92,8 @@ jobs:
 
       - name: Azure – Download latest model
         run: |
+          $ErrorActionPreference = "Continue"
+
           az extension add --name ml -y
           az configure --defaults group=$env:GROUP workspace=$env:WORKSPACE location=$env:LOCATION
 
@@ -91,16 +101,15 @@ jobs:
           $version = az ml model list -n animal-classification `
             --query "[0].version" -o tsv
 
-          echo "Latest model version: $version"
+          Write-Host "Latest model version: $version"
 
-          # Download into inference/model (used as Docker build context)
+          # Download into inference/model (Docker build context)
           az ml model download `
             --name animal-classification `
             --version $version `
             --download-path inference/model `
             --overwrite
 
-      # upload inference/ (API code + downloaded model) as artifact
       - name: Docker – Upload API code from inference
         uses: actions/upload-artifact@v4
         with:
@@ -118,14 +127,12 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      # bring back inference/ (API code + model) from previous job
       - name: Download API + model artifact
         uses: actions/download-artifact@v4
         with:
           name: docker-config
           path: inference
 
-      # create image tags/labels
       - name: Docker – Gather tags
         id: docker-meta-data
         uses: docker/metadata-action@v5
@@ -137,14 +144,12 @@ jobs:
             type=sha
             type=raw,value=latest
 
-      # log in to Docker Hub (you already created these secrets)
       - name: Docker – Login to Docker Hub
         uses: docker/login-action@v3
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
-      # build + push container using inference/ as build context
       - name: Docker – Build and push
         uses: docker/build-push-action@v6
         with:
