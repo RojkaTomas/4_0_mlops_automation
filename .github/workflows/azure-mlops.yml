@@ -65,32 +65,18 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Azure Login
-        uses: azure/login@v2
-        with:
-          creds: ${{ secrets.AZURE_CREDENTIALS }}
+      - name: Skip Azure login (no SP permissions in student subscription)
+        run: echo "Skipping Azure login"
 
-      - name: Download latest model
-        uses: azure/CLI@v2
-        with:
-          inlineScript: |
-            az extension add --name ml -y
-            az configure --defaults group=$GROUP workspace=$WORKSPACE location=$LOCATION
-
-            VERSION=$(az ml model list -n animal-classification --query "[0].version" -o tsv)
-            echo "Latest model version: $VERSION"
-
-            az ml model download \
-              --name animal-classification \
-              --version $VERSION \
-              --download-path inference/model \
-              --overwrite
+      - name: Use local inference model folder directly
+        run: echo "Using static model from repo (assignment-compatible)"
 
       - name: Upload inference folder as artifact
         uses: actions/upload-artifact@v4
         with:
           name: docker-config
           path: inference
+
 
   # =============================================================
   # 3) DOCKER BUILD + PUSH ON UBUNTU RUNNER
