@@ -12,46 +12,51 @@ env:
 
 jobs:
 
-  # ============================================
-  # 1) AZURE PIPELINE (best-effort)
-  # ============================================
+  # =============================================================
+  # 1) RUN AZURE PIPELINE (best effort) ON WINDOWS SELF-HOSTED
+  # =============================================================
   azure-pipeline:
-    runs-on: self-hosted   # your runner
+    runs-on: self-hosted
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
       - name: Check Azure CLI identity
-        shell: bash
+        shell: powershell
         run: |
-          echo "=== Checking Azure CLI identity ==="
-          az account show || echo "⚠ Not logged into Azure (expected on self-hosted)"
+          Write-Host "=== Checking Azure CLI identity ==="
+          az account show 2>$null
+          if ($LASTEXITCODE -ne 0) {
+            Write-Host "⚠ Not logged in to Azure (expected)"
+          }
 
-      - name: Azure – Submit pipeline job (best-effort)
+      - name: Azure – Submit AML pipeline (best effort)
         id: submit_job
-        shell: bash
-        continue-on-error: true   # OPTION A
+        shell: powershell
+        continue-on-error: true
         run: |
-          echo "=== Installing Azure ML extension ==="
+          Write-Host "=== Installing Azure ML extension ==="
           az extension add --name ml -y
 
-          echo "=== Setting defaults ==="
-          az configure --defaults group=$GROUP workspace=$WORKSPACE location=$LOCATION
+          Write-Host "=== Setting defaults ==="
+          az configure --defaults group=$env:GROUP workspace=$env:WORKSPACE location=$env:LOCATION
 
-          echo "=== Submitting Pipeline (best effort) ==="
-          jobName=$(az ml job create --file pipelines/animals-classification.yaml --query name -o tsv 2>/dev/null)
-          if [ -z "$jobName" ]; then
-            echo "⚠ Pipeline failed (expected on student accounts)"
-          fi
+          Write-Host "=== Submitting AML pipeline ==="
+          $jobName = az ml job create --file pipelines/animals-classification.yaml --query name -o tsv 2>$null
 
-          echo "job_name=$jobName" >> $GITHUB_OUTPUT
+          if (-not $jobName) {
+            Write-Host "⚠ Pipeline submission failed — continuing anyway"
+          }
+
+          "job_name=$jobName" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
 
     outputs:
       job_name: ${{ steps.submit_job.outputs.job_name }}
 
-  # ============================================
-  # 2) DOWNLOAD MODEL
-  # ============================================
+  # =============================================================
+  # 2) DOWNLOAD MODEL ON UBUNTU HOSTED RUNNER
+  # =============================================================
   download:
     needs: azure-pipeline
     runs-on: ubuntu-24.04
@@ -65,7 +70,7 @@ jobs:
         with:
           creds: ${{ secrets.AZURE_CREDENTIALS }}
 
-      - name: Azure – Download latest model
+      - name: Download latest model
         uses: azure/CLI@v2
         with:
           inlineScript: |
@@ -87,25 +92,25 @@ jobs:
           name: docker-config
           path: inference
 
-  # ============================================
-  # 3) DOCKER BUILD + PUSH
-  # ============================================
+  # =============================================================
+  # 3) DOCKER BUILD + PUSH ON UBUNTU RUNNER
+  # =============================================================
   deploy:
     needs: download
     runs-on: ubuntu-24.04
 
     steps:
-      - name: Checkout repository
+      - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Download artifact
+      - name: Download inference artifact
         uses: actions/download-artifact@v4
         with:
           name: docker-config
           path: inference
 
       - name: Docker metadata
-        id: docker-meta
+        id: metadata
         uses: docker/metadata-action@v5
         with:
           images: docker.io/tomasrojka/animals-api
@@ -125,5 +130,5 @@ jobs:
         with:
           context: ./inference
           push: true
-          tags: ${{ steps.docker-meta.outputs.tags }}
-          labels: ${{ steps.docker-meta.outputs.labels }}
+          tags: ${{ steps.metadata.outputs.tags }}
+          labels: ${{ steps.metadata.outputs.labels }}
