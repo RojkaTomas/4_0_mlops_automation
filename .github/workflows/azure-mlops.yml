@@ -30,25 +30,31 @@ jobs:
       - name: Azure – Submit pipeline job (best-effort)
         id: submit_job
         run: |
-          # Don't stop on error – we just want to TRY
-          $ErrorActionPreference = "Continue"
-
+          Write-Host "=== Installing Azure ML extension ==="
           az extension add --name ml -y
+
+          Write-Host "=== Setting defaults ==="
           az configure --defaults group=$env:GROUP workspace=$env:WORKSPACE location=$env:LOCATION
 
-          Write-Host "=== Submit Animals Classification pipeline job ==="
+          Write-Host "=== Submitting AML job (best-effort) ==="
+          $ErrorActionPreference = "Continue"
 
           $jobName = az ml job create `
             --file pipelines/animals-classification.yaml `
             --query name -o tsv
 
-          if (-not $jobName) {
-            Write-Warning "Pipeline submission failed (likely 'Existing properties cannot be modified')."
-            Write-Warning "Continuing workflow – will reuse latest registered model instead."
-          } else {
-            Write-Host "Pipeline run name: $jobName"
-            echo "job_name=$jobName" >> $env:GITHUB_OUTPUT
+          if (-not $jobName -or $jobName -eq "") {
+            Write-Warning "⚠ Pipeline submission failed (likely due to immutable Azure ML resources)."
+            Write-Warning "⚠ Continuing workflow using latest registered model."
           }
+          else {
+            Write-Host "Pipeline run name: $jobName"
+
+            # PowerShell-safe way to write GitHub output
+            "# writing job_name output"
+            "job_name=$jobName" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+          }
+
 
     outputs:
       job_name: ${{ steps.submit_job.outputs.job_name }}
