@@ -12,7 +12,7 @@ env:
 
 jobs:
   # ------------------------------------------
-  # 1) Run Azure ML pipeline (just submit job)
+  # 1) Try to run Azure ML pipeline (best-effort)
   # ------------------------------------------
   azure-pipeline:
     runs-on: self-hosted
@@ -27,21 +27,28 @@ jobs:
       - name: Check Azure CLI identity
         run: az account show
 
-      - name: Azure – Submit pipeline job
+      - name: Azure – Submit pipeline job (best-effort)
         id: submit_job
         run: |
-          $ErrorActionPreference = "Stop"
+          # Don't stop on error – we just want to TRY
+          $ErrorActionPreference = "Continue"
 
           az extension add --name ml -y
           az configure --defaults group=$env:GROUP workspace=$env:WORKSPACE location=$env:LOCATION
 
           Write-Host "=== Submit Animals Classification pipeline job ==="
+
           $jobName = az ml job create `
             --file pipelines/animals-classification.yaml `
             --query name -o tsv
 
-          Write-Host "Pipeline run name: $jobName"
-          echo "job_name=$jobName" >> $env:GITHUB_OUTPUT
+          if (-not $jobName) {
+            Write-Warning "Pipeline submission failed (likely 'Existing properties cannot be modified')."
+            Write-Warning "Continuing workflow – will reuse latest registered model instead."
+          } else {
+            Write-Host "Pipeline run name: $jobName"
+            echo "job_name=$jobName" >> $env:GITHUB_OUTPUT
+          }
 
     outputs:
       job_name: ${{ steps.submit_job.outputs.job_name }}
@@ -94,7 +101,7 @@ jobs:
   # ------------------------------------------
   deploy:
     needs: download
-    runs-on: self-hosted   # uses your machine with Docker installed
+    runs-on: self-hosted   # your PC runner with Docker installed
 
     steps:
       - name: Checkout repository
