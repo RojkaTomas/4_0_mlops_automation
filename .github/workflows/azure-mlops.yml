@@ -11,24 +11,29 @@ env:
   LOCATION: westeurope
 
 jobs:
-  # ------------------------------------------
-  # 1) Try to run Azure ML pipeline (best-effort)
-  # ------------------------------------------
+  # ============================================
+  # 1) AZURE ML PIPELINE (best-effort)
+  # ============================================
   azure-pipeline:
-    runs-on: self-hosted
-    defaults:
-      run:
-        shell: powershell
+    runs-on: self-hosted   # because Azure login no SP
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
       - name: Check Azure CLI identity
-        run: az account show
+        shell: pwsh
+        run: |
+          Write-Host "=== Checking Azure CLI identity ==="
+          az account show
 
+      # -------------------------------
+      # Submit AML job (best effort)
+      # -------------------------------
       - name: Azure – Submit pipeline job (best-effort)
         id: submit_job
+        shell: pwsh
+        continue-on-error: true   # 👈 OPTION A: tolerate Azure errors
         run: |
           Write-Host "=== Installing Azure ML extension ==="
           az extension add --name ml -y
@@ -37,94 +42,82 @@ jobs:
           az configure --defaults group=$env:GROUP workspace=$env:WORKSPACE location=$env:LOCATION
 
           Write-Host "=== Submitting AML job (best-effort) ==="
-          $ErrorActionPreference = "Continue"
-
-          $jobName = az ml job create `
-            --file pipelines/animals-classification.yaml `
-            --query name -o tsv
-
-          if (-not $jobName -or $jobName -eq "") {
-            Write-Warning "⚠ Pipeline submission failed (likely due to immutable Azure ML resources)."
-            Write-Warning "⚠ Continuing workflow using latest registered model."
+          $jobName = ""
+          try {
+              $jobName = az ml job create `
+                --file pipelines/animals-classification.yaml `
+                --query name -o tsv
           }
-          else {
-            Write-Host "Pipeline run name: $jobName"
-
-            # PowerShell-safe way to write GitHub output
-            "# writing job_name output"
-            "job_name=$jobName" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+          catch {
+              Write-Host "⚠ Pipeline submission failed (this is OK on student accounts)"
           }
 
+          Write-Host "job_name=$jobName"
+          "job_name=$jobName" >> $env:GITHUB_OUTPUT
 
     outputs:
       job_name: ${{ steps.submit_job.outputs.job_name }}
 
-  # ------------------------------------------
-  # 2) DOWNLOAD – grab latest registered model + upload inference code
-  # ------------------------------------------
+  # ============================================
+  # 2) DOWNLOAD MODEL + SAVE INFERENCE CODE
+  # ============================================
   download:
     needs: azure-pipeline
-    runs-on: self-hosted
-    defaults:
-      run:
-        shell: powershell
+    runs-on: ubuntu-24.04
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Check Azure CLI identity
-        run: az account show
+      - name: Azure Login
+        uses: azure/login@v2
+        with:
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
 
       - name: Azure – Download latest model
-        run: |
-          $ErrorActionPreference = "Stop"
+        uses: azure/CLI@v2
+        with:
+          inlineScript: |
+            az extension add --name ml -y
+            az configure --defaults group=$GROUP workspace=$WORKSPACE location=$LOCATION
 
-          az extension add --name ml -y
-          az configure --defaults group=$env:GROUP workspace=$env:WORKSPACE location=$env:LOCATION
+            VERSION=$(az ml model list -n animal-classification --query "[0].version" -o tsv)
+            echo "Latest model version: $VERSION"
 
-          # Get latest version of your registered model
-          $version = az ml model list -n animal-classification `
-            --query "[0].version" -o tsv
+            az ml model download \
+              --name animal-classification \
+              --version $VERSION \
+              --download-path inference/model \
+              --overwrite
 
-          Write-Host "Latest model version: $version"
-
-          # Download into inference/model (Docker build context)
-          az ml model download `
-            --name animal-classification `
-            --version $version `
-            --download-path inference/model `
-            --overwrite
-
-      - name: Docker – Upload API code from inference
+      - name: Upload inference folder as artifact
         uses: actions/upload-artifact@v4
         with:
           name: docker-config
           path: inference
 
-  # ------------------------------------------
-  # 3) DEPLOY – build Docker image + push to Docker Hub
-  # ------------------------------------------
+  # ============================================
+  # 3) DOCKER BUILD + PUSH TO DOCKER HUB
+  # ============================================
   deploy:
     needs: download
-    runs-on: self-hosted   # your PC runner with Docker installed
+    runs-on: ubuntu-24.04
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Download API + model artifact
+      - name: Download artifact
         uses: actions/download-artifact@v4
         with:
           name: docker-config
           path: inference
 
       - name: Docker – Gather tags
-        id: docker-meta-data
+        id: docker-meta
         uses: docker/metadata-action@v5
         with:
-          images: |
-            docker.io/tomasrojka/animals-api
+          images: docker.io/tomasrojka/animals-api
           tags: |
             type=ref,event=branch
             type=sha
@@ -136,10 +129,10 @@ jobs:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
-      - name: Docker – Build and push
+      - name: Docker – Build and Push Image
         uses: docker/build-push-action@v6
         with:
           context: ./inference
           push: true
-          tags: ${{ steps.docker-meta-data.outputs.tags }}
-          labels: ${{ steps.docker-meta-data.outputs.labels }}
+          tags: ${{ steps.docker-meta.outputs.tags }}
+          labels: ${{ steps.docker-meta.outputs.labels }}
