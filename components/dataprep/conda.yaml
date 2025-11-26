@@ -1,0 +1,9 @@
+name: aml-preprocessing-cli
+channels:
+  - conda-forge
+  - defaults
+dependencies:
+  - python=3.10
+  - pip
+  - pip:
+      - pillow==11.2.1

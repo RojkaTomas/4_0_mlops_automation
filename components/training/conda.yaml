@@ -1,0 +1,11 @@
+name: aml-training-cli
+channels:
+  - conda-forge
+  - defaults
+dependencies:
+  - python=3.10
+  - pip
+  - pip:
+      - tensorflow==2.15.0
+      - pillow==11.2.1
+      - numpy

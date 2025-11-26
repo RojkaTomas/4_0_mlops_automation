@@ -1,0 +1,20 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: animals-api
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: animals-api
+  template:
+    metadata:
+      labels:
+        app: animals-api
+    spec:
+      containers:
+        - name: animals-api
+          image: tomasrojka/animals-api:latest   # 👈 change this
+          imagePullPolicy: Always
+          ports:
+            - containerPort: 8000

@@ -1,0 +1,11 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: animals-api
+spec:
+  type: LoadBalancer      # or NodePort if your cluster doesn't support LB
+  selector:
+    app: animals-api
+  ports:
+    - port: 80
+      targetPort: 8000
