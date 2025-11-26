@@ -12,7 +12,7 @@ env:
 
 jobs:
   # ------------------------------------------
-  # 1) Run Azure ML pipeline (compute + env + components + job)
+  # 1) Run Azure ML pipeline (just submit job)
   # ------------------------------------------
   azure-pipeline:
     runs-on: self-hosted
@@ -27,48 +27,21 @@ jobs:
       - name: Check Azure CLI identity
         run: az account show
 
-      - name: Azure – Create compute + envs + components + pipeline run
+      - name: Azure – Submit pipeline job
         id: submit_job
         run: |
-          # don't fail the whole step on CLI warnings
-          $ErrorActionPreference = "Continue"
+          $ErrorActionPreference = "Stop"
 
           az extension add --name ml -y
           az configure --defaults group=$env:GROUP workspace=$env:WORKSPACE location=$env:LOCATION
 
-          # 1. Compute (ignore if it already exists)
-          Write-Host "=== Create / ensure compute ==="
-          az ml compute create --file environment/compute.yaml
-
-          # 2. Environments
-          Write-Host "=== Create / ensure environments ==="
-          foreach ($envName in @("preprocessing", "training")) {
-            az ml environment create --file "environment/$envName.yaml"
-          }
-
-          # 3. Components
-          Write-Host "=== Create components ==="
-          $components = @(
-            "components/dataprep/dataprep.yaml",
-            "components/dataprep/traintestsplit.yaml",
-            "components/training/training.yaml"
-          )
-          foreach ($comp in $components) {
-            az ml component create --file $comp
-          }
-
-          # 4. Run pipeline
-          Write-Host "=== Run pipeline ==="
+          Write-Host "=== Submit Animals Classification pipeline job ==="
           $jobName = az ml job create `
             --file pipelines/animals-classification.yaml `
             --query name -o tsv
 
           Write-Host "Pipeline run name: $jobName"
           echo "job_name=$jobName" >> $env:GITHUB_OUTPUT
-
-          # 5. Stop compute (best effort)
-          Write-Host "=== Stop compute (best effort) ==="
-          az ml compute stop --name cli-created-machine
 
     outputs:
       job_name: ${{ steps.submit_job.outputs.job_name }}
@@ -92,7 +65,7 @@ jobs:
 
       - name: Azure – Download latest model
         run: |
-          $ErrorActionPreference = "Continue"
+          $ErrorActionPreference = "Stop"
 
           az extension add --name ml -y
           az configure --defaults group=$env:GROUP workspace=$env:WORKSPACE location=$env:LOCATION
@@ -121,7 +94,7 @@ jobs:
   # ------------------------------------------
   deploy:
     needs: download
-    runs-on: self-hosted
+    runs-on: self-hosted   # uses your machine with Docker installed
 
     steps:
       - name: Checkout repository
