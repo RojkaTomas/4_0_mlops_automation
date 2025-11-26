@@ -15,56 +15,57 @@ jobs:
   # 1) Run Azure ML pipeline (compute + env + components + job)
   # ------------------------------------------
   azure-pipeline:
-    runs-on: self-hosted     # <-- use your own runner
+    runs-on: self-hosted
+
+    # 👇 add this block so every "run:" uses Windows PowerShell, not pwsh
+    defaults:
+      run:
+        shell: powershell
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      # 👇 this step will now run with "powershell" and can call az
       - name: Check Azure CLI identity
-        shell: pwsh
         run: az account show
 
       - name: Azure – Create compute + envs + components + pipeline run
         id: submit_job
-        shell: pwsh
-        run: |
-          az extension add --name ml -y
-          az configure --defaults group=$env:GROUP workspace=$env:WORKSPACE location=$env:LOCATION
+        uses: azure/CLI@v2.1.0
+        with:
+          azcliversion: 2.64.0
+          inlineScript: |
+            az extension add --name ml -y
+            az configure --defaults group=$env:GROUP workspace=$env:WORKSPACE location=$env:LOCATION
 
-          # 1. Compute instance (safe if it exists already)
-          az ml compute create --file environment/compute.yaml --only-show-errors `
-            || echo "Compute already exists or creation skipped."
+            # 1. Compute instance (safe if it exists already)
+            az ml compute create --file environment/compute.yaml || true
 
-          # 2. Environments  (safe if already registered)
-          $envs = @("preprocessing","training")
-          foreach ($e in $envs) {
-            az ml environment create --file "environment/$e.yaml" --only-show-errors `
-              || echo "Environment $e already exists or creation skipped."
-          }
+            # 2. Environments  (safe if already registered)
+            for ENV in preprocessing training; do
+              az ml environment create --file environment/${ENV}.yaml || true
+            done
 
-          # 3. Components
-          $components = @(
-            "components/dataprep/dataprep.yaml",
-            "components/dataprep/traintestsplit.yaml",
-            "components/training/training.yaml"
-          )
-          foreach ($c in $components) {
-            az ml component create --file $c
-          }
+            # 3. Components
+            for COMP in \
+              components/dataprep/dataprep.yaml \
+              components/dataprep/traintestsplit.yaml \
+              components/training/training.yaml
+            do
+              az ml component create --file $COMP
+            done
 
-          # 4. Run pipeline
-          $jobName = az ml job create `
-            --file pipelines/animals-classification.yaml `
-            --query name -o tsv
-          echo "Pipeline job name: $jobName"
+            # 4. Run pipeline
+            JOB_NAME=$(az ml job create \
+              --file pipelines/animals-classification.yaml \
+              --query name -o tsv)
 
-          # Export for next jobs
-          "job_name=$jobName" >> $env:GITHUB_OUTPUT
+            echo "job_name=$JOB_NAME" >> $GITHUB_OUTPUT
 
-          # 5. Cleanup – stop compute (ignore if already stopped)
-          az ml compute stop --name cli-created-machine `
-            || echo "Compute already stopped or not found."
+            # 5. Cleanup – stop compute
+            az ml compute stop --name cli-created-machine || true
+
 
     outputs:
       job_name: ${{ steps.submit_job.outputs.job_name }}
