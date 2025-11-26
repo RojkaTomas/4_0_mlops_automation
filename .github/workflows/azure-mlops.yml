@@ -16,8 +16,6 @@ jobs:
   # ------------------------------------------
   azure-pipeline:
     runs-on: self-hosted
-
-    # 👇 add this block so every "run:" uses Windows PowerShell, not pwsh
     defaults:
       run:
         shell: powershell
@@ -26,46 +24,43 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      # 👇 this step will now run with "powershell" and can call az
+      # sanity check that az is logged in on this machine
       - name: Check Azure CLI identity
         run: az account show
 
       - name: Azure – Create compute + envs + components + pipeline run
         id: submit_job
-        uses: azure/CLI@v2.1.0
-        with:
-          azcliversion: 2.64.0
-          inlineScript: |
-            az extension add --name ml -y
-            az configure --defaults group=$env:GROUP workspace=$env:WORKSPACE location=$env:LOCATION
+        run: |
+          az extension add --name ml -y
+          az configure --defaults group=$env:GROUP workspace=$env:WORKSPACE location=$env:LOCATION
 
-            # 1. Compute instance (safe if it exists already)
-            az ml compute create --file environment/compute.yaml || true
+          # 1. Compute (ignore error if it already exists)
+          az ml compute create --file environment/compute.yaml 2>$null
 
-            # 2. Environments  (safe if already registered)
-            for ENV in preprocessing training; do
-              az ml environment create --file environment/${ENV}.yaml || true
-            done
+          # 2. Environments (ignore if already exist)
+          foreach ($envName in @("preprocessing", "training")) {
+            az ml environment create --file "environment/$envName.yaml" 2>$null
+          }
 
-            # 3. Components
-            for COMP in \
-              components/dataprep/dataprep.yaml \
-              components/dataprep/traintestsplit.yaml \
-              components/training/training.yaml
-            do
-              az ml component create --file $COMP
-            done
+          # 3. Components
+          $components = @(
+            "components/dataprep/dataprep.yaml",
+            "components/dataprep/traintestsplit.yaml",
+            "components/training/training.yaml"
+          )
+          foreach ($comp in $components) {
+            az ml component create --file $comp
+          }
 
-            # 4. Run pipeline
-            JOB_NAME=$(az ml job create \
-              --file pipelines/animals-classification.yaml \
-              --query name -o tsv)
+          # 4. Run pipeline
+          $jobName = az ml job create `
+            --file pipelines/animals-classification.yaml `
+            --query name -o tsv
 
-            echo "job_name=$JOB_NAME" >> $GITHUB_OUTPUT
+          echo "job_name=$jobName" >> $env:GITHUB_OUTPUT
 
-            # 5. Cleanup – stop compute
-            az ml compute stop --name cli-created-machine || true
-
+          # 5. Stop compute (best effort)
+          az ml compute stop --name cli-created-machine 2>$null
 
     outputs:
       job_name: ${{ steps.submit_job.outputs.job_name }}
@@ -75,14 +70,19 @@ jobs:
   # ------------------------------------------
   download:
     needs: azure-pipeline
-    runs-on: self-hosted     # <-- also on your runner
+    runs-on: self-hosted
+    defaults:
+      run:
+        shell: powershell
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      - name: Check Azure CLI identity
+        run: az account show
+
       - name: Azure – Download latest model
-        shell: pwsh
         run: |
           az extension add --name ml -y
           az configure --defaults group=$env:GROUP workspace=$env:WORKSPACE location=$env:LOCATION
@@ -90,16 +90,17 @@ jobs:
           # Get latest version of your registered model
           $version = az ml model list -n animal-classification `
             --query "[0].version" -o tsv
+
           echo "Latest model version: $version"
 
-          # Download into inference/model (Docker context later)
+          # Download into inference/model (used as Docker build context)
           az ml model download `
             --name animal-classification `
             --version $version `
             --download-path inference/model `
             --overwrite
 
-      # Upload everything in inference/ (API code + downloaded model)
+      # upload inference/ (API code + downloaded model) as artifact
       - name: Docker – Upload API code from inference
         uses: actions/upload-artifact@v4
         with:
@@ -111,20 +112,20 @@ jobs:
   # ------------------------------------------
   deploy:
     needs: download
-    runs-on: self-hosted     # you already have Docker here
+    runs-on: self-hosted
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      # Bring back inference/ (API code + downloaded model)
+      # bring back inference/ (API code + model) from previous job
       - name: Download API + model artifact
         uses: actions/download-artifact@v4
         with:
           name: docker-config
           path: inference
 
-      # Create Docker tags/labels
+      # create image tags/labels
       - name: Docker – Gather tags
         id: docker-meta-data
         uses: docker/metadata-action@v5
@@ -136,14 +137,14 @@ jobs:
             type=sha
             type=raw,value=latest
 
-      # Login to Docker Hub
+      # log in to Docker Hub (you already created these secrets)
       - name: Docker – Login to Docker Hub
         uses: docker/login-action@v3
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
-      # Build + push image using inference/ as build context
+      # build + push container using inference/ as build context
       - name: Docker – Build and push
         uses: docker/build-push-action@v6
         with:
